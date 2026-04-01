@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "805281104403",
+    "firebase_url": "https://sosuu-speed-2826a-default-rtdb.firebaseio.com",
+    "project_id": "sosuu-speed-2826a",
+    "storage_bucket": "sosuu-speed-2826a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:805281104403:android:884dd53f82c86d61a975e6",
+        "android_client_info": {
+          "package_name": "com.example.sosuu_speed"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCaVkM1P6FAHLY5ygsas4jVl3e1tBlBVXs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

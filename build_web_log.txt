@@ -1,0 +1,1347 @@
+import 'dart:async';
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'main.dart' show factorize, compositeNumbers;
+
+/// ─────────────────────────────────────────────
+/// ルーム選択画面
+/// ─────────────────────────────────────────────
+class OnlineMenuScreen extends StatelessWidget {
+  const OnlineMenuScreen({super.key});
+
+  String _generateRoomId() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    final rng = Random();
+    return List.generate(5, (_) => chars[rng.nextInt(chars.length)]).join();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final roomController = TextEditingController();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0a1628),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        title: const Text('対人戦'),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text('👥', style: TextStyle(fontSize: 60)),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: 280,
+                height: 56,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00d4ff),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  onPressed: () {
+                    final roomId = _generateRoomId();
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            WaitingRoomScreen(roomId: roomId, isHost: true),
+                      ),
+                    );
+                  },
+                  child: const Text(
+                    'ルームを作る',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+              const Text('または',
+                  style: TextStyle(color: Colors.white38, fontSize: 14)),
+              const SizedBox(height: 32),
+              Container(
+                width: 280,
+                decoration: BoxDecoration(
+                  color: Colors.white10,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: TextField(
+                  controller: roomController,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    letterSpacing: 4,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                  textCapitalization: TextCapitalization.characters,
+                  maxLength: 5,
+                  decoration: const InputDecoration(
+                    hintText: 'ルームIDそうだ僕がキラだ',
+                    hintStyle: TextStyle(color: Colors.white38),
+                    border: InputBorder.none,
+                    counterText: '',
+                    contentPadding: EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  onChanged: (v) {
+                    final up = v.toUpperCase();
+                    roomController.value = roomController.value.copyWith(
+                      text: up,
+                      selection: TextSelection.collapsed(offset: up.length),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: 280,
+                height: 56,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white12,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  onPressed: () {
+                    final id = roomController.text.trim().toUpperCase();
+                    if (id.length != 5) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('5文字のルームIDを入力してください'),
+                        ),
+                      );
+                      return;
+                    }
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            WaitingRoomScreen(roomId: id, isHost: false),
+                      ),
+                    );
+                  },
+                  child: const Text(
+                    'ルームに参加',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ─────────────────────────────────────────────
+/// 待機室
+/// ─────────────────────────────────────────────
+class WaitingRoomScreen extends StatefulWidget {
+  final String roomId;
+  final bool isHost;
+  const WaitingRoomScreen(
+      {super.key, required this.roomId, required this.isHost});
+
+  @override
+  State<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
+}
+
+class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
+  final _db = FirebaseDatabase.instance;
+  StreamSubscription? _sub;
+  bool _guestJoined = false;
+  bool _navigated = false;
+  bool _starting = false;
+
+  DatabaseReference get _roomRef => _db.ref('rooms/${widget.roomId}');
+
+  @override
+  void initState() {
+    super.initState();
+    _setup();
+  }
+
+  Future<void> _setup() async {
+    if (widget.isHost) {
+      await _roomRef.set({
+        'status': 'waiting',
+        'host': 'ready',
+        'guest': null,
+        'seed': null,
+        'deck': null,
+        'game': null,
+        'createdAt': ServerValue.timestamp,
+      });
+
+      _sub = _roomRef.child('guest').onValue.listen((event) {
+        final val = event.snapshot.value;
+        if (val != null && mounted && !_navigated && !_guestJoined) {
+          setState(() => _guestJoined = true);
+        }
+      });
+    } else {
+      final snap = await _roomRef.get();
+      if (!snap.exists) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('ルームが見つかりません')),
+          );
+          Navigator.pop(context);
+        }
+        return;
+      }
+      final data = snap.value as Map<dynamic, dynamic>?;
+      final status = data?['status'] as String?;
+      if (status != 'waiting') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('このルームは開始済みです')),
+          );
+          Navigator.pop(context);
+        }
+        return;
+      }
+
+      await _roomRef.child('guest').set('ready');
+      _sub = _roomRef.child('status').onValue.listen((event) {
+        final val = event.snapshot.value;
+        if (val == 'playing' && !_navigated) _startGame();
+      });
+    }
+  }
+
+  void _startGame() {
+    if (_navigated) return;
+    _navigated = true;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            OnlineGameScreen(roomId: widget.roomId, isHost: widget.isHost),
+      ),
+    );
+  }
+
+  Future<void> _onStartPressed() async {
+    if (!_guestJoined || _starting) return;
+    setState(() => _starting = true);
+
+    // ① state 初期化（deckPos をここで作る）
+    final stateRef = _db.ref('rooms/${widget.roomId}/game/state');
+    await stateRef.set({
+      'round': 0,
+      'flowCount': 0,
+      'deckPos': 0,
+      'turnStartAt': DateTime.now().millisecondsSinceEpoch, // でもOKだけど
+      'limitSec': 10,
+    });
+
+    // ② デッキを決めて room に保存
+    final rng = Random();
+    final seed = rng.nextInt(999999);
+    final deck = List<int>.from(compositeNumbers)..shuffle(Random(seed));
+
+    try {
+      await _roomRef.update({'status': 'playing', 'seed': seed, 'deck': deck});
+      await _roomRef.child('game').set({
+        'phase': 'init',
+        'phaseAt': ServerValue.timestamp,
+        'composite': null,
+        'playZone': {},
+      });
+      _startGame();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _starting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('開始に失敗しました: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  String get _url => 'https://sosuu-speed-2826a.web.app/?room=${widget.roomId}';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0a1628),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        title: const Text('待機中...'),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('ルームID',
+                style: TextStyle(color: Colors.white38, fontSize: 13)),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Text(
+                widget.roomId,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 36,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 8,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            TextButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: widget.roomId));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('コピーしました！')),
+                );
+              },
+              icon: const Icon(Icons.copy, color: Colors.white38, size: 14),
+              label: const Text('コピー',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: QrImageView(
+                data: _url,
+                version: QrVersions.auto,
+                size: 160,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'QRコードを読ませて招待',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 28),
+            if (widget.isHost) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _guestJoined ? Icons.check_circle : Icons.hourglass_empty,
+                    color: _guestJoined
+                        ? const Color(0xFF00e676)
+                        : Colors.white38,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _guestJoined ? '相手が参加しました！' : '相手の参加を待っています...',
+                    style: TextStyle(
+                      color: _guestJoined
+                          ? const Color(0xFF00e676)
+                          : Colors.white54,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              GestureDetector(
+                onTap: (_guestJoined && !_starting) ? _onStartPressed : null,
+                child: Container(
+                  width: 200,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color:
+                        _guestJoined ? const Color(0xFF00d4ff) : Colors.white24,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Center(
+                    child: _starting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'ゲームスタート！',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+            ] else ...[
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white38,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'ホストのスタートを待っています...',
+                    style: TextStyle(color: Colors.white54, fontSize: 14),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ─────────────────────────────────────────────
+/// オンラインゲーム画面
+/// ─────────────────────────────────────────────
+class OnlineGameScreen extends StatefulWidget {
+  final String roomId;
+  final bool isHost;
+  const OnlineGameScreen({super.key, required this.roomId, required this.isHost});
+
+  @override
+  State<OnlineGameScreen> createState() => _OnlineGameScreenState();
+}
+
+class _OnlineGameScreenState extends State<OnlineGameScreen> {
+  static const Map<int, int> _cardCounts = {2: 5, 3: 4, 5: 3, 7: 3, 11: 3};
+
+  final _db = FirebaseDatabase.instance;
+
+  StreamSubscription? _roomSub;
+  StreamSubscription<DatabaseEvent>? _stateSub;
+
+  // サーバ時刻補正
+  StreamSubscription<DatabaseEvent>? _offsetSub;
+  int _serverOffsetMs = 0;
+
+  Timer? _countTimer;
+  int _countDown = -1;
+  int _turnStartAtMs = 0;
+  int _limitSec = 10;
+
+  // 自分の山札
+  List<int> _myDeck = [];
+  List<int> _mySlots = [];
+
+  // 相手表示
+  List<int> _opponentSlots = [];
+  int _opponentDeckCount = 0;
+
+  // 共有デッキ
+  List<int> _deck = [];
+
+  // 盤面
+  int? _currentComposite;
+  Map<int, int> _targetFactors = {};
+  Map<int, Map<String, int>> _playZone = {};
+
+  bool _gameOver = false;
+  bool _iWon = false;
+  bool _isDraw = false;
+
+  bool _penaltyMe = false;
+  bool _penaltyOp = false;
+
+  bool _acceptInput = false;
+  String _penaltyMsg = '';
+  String _readyGoText = '';
+
+  bool _navigated = false;
+
+  // 多重流し防止（端末内）
+  bool _isFlowing = false;
+
+  String get _myKey => widget.isHost ? 'host' : 'guest';
+  String get _opKey => widget.isHost ? 'guest' : 'host';
+
+  DatabaseReference get _roomRef => _db.ref('rooms/${widget.roomId}');
+  DatabaseReference get _gameRef => _db.ref('rooms/${widget.roomId}/game');
+  DatabaseReference get _stateRef => _db.ref('rooms/${widget.roomId}/game/state');
+
+  int _serverNowMs() => DateTime.now().millisecondsSinceEpoch + _serverOffsetMs;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _offsetSub = _db.ref('.info/serverTimeOffset').onValue.listen((e) {
+      final v = e.snapshot.value;
+      if (v is int) _serverOffsetMs = v;
+    });
+
+    _stateSub = _stateRef.onValue.listen((event) {
+      final m = (event.snapshot.value as Map?)?.cast<String, dynamic>();
+      if (m == null) return;
+
+      final startAt = m['turnStartAt'];
+      final lim = m['limitSec'];
+
+      if (startAt is int) _turnStartAtMs = startAt;
+      if (lim is int) _limitSec = lim;
+
+      _startOrUpdateCountdown();
+    });
+
+    _initGame();
+  }
+
+  @override
+  void dispose() {
+    _roomSub?.cancel();
+    _stateSub?.cancel();
+    _offsetSub?.cancel();
+    _countTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startOrUpdateCountdown() {
+    if (_turnStartAtMs == 0) return;
+
+    _recalcCountdown();
+    _countTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      _recalcCountdown();
+    });
+  }
+
+  void _recalcCountdown() {
+    if (_turnStartAtMs == 0) return;
+
+    final nowMs = _serverNowMs();
+    final elapsed = ((nowMs - _turnStartAtMs) / 1000).floor();
+    final remain = (_limitSec - elapsed).clamp(0, _limitSec);
+
+    if (remain != _countDown) {
+      setState(() => _countDown = remain);
+    }
+
+    // ★誰でもタイムアウトで流せる（Transactionロックがあるので二重進行しない）
+    if (remain <= 0 && !_isFlowing) {
+      _isFlowing = true;
+      setState(() => _acceptInput = false);
+      () async {
+        try {
+          await _flushAndNext(reason: 'timeout');
+        } finally {
+          _isFlowing = false;
+        }
+      }();
+    }
+  }
+
+  void _stopCountdownViewOnly() {
+    _countTimer?.cancel();
+    _countTimer = null;
+    if (mounted) setState(() => _countDown = -1);
+  }
+
+  Future<void> _initGame() async {
+    final snap = await _roomRef.get();
+    final data = snap.value as Map<dynamic, dynamic>?;
+
+    if (data == null ||
+        data['status'] != 'playing' ||
+        data['deck'] == null ||
+        data['seed'] == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('ルーム状態が不正です')));
+        Navigator.pop(context);
+      }
+      return;
+    }
+
+    final deckRaw = data['deck'] as List<dynamic>;
+    _deck = deckRaw.map((e) {
+      if (e is int) return e;
+      return int.parse(e.toString());
+    }).toList();
+
+    final seed = data['seed'] as int;
+    _myDeck = _buildDeck(Random(seed + (widget.isHost ? 1 : 2)));
+    _mySlots = [];
+    _fillMySlots();
+
+    await _roomRef.child(_myKey).set({
+      'slots': _mySlots,
+      'deckCount': _myDeck.length,
+      'done': false,
+      'penalty': false,
+    });
+
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+
+    _roomSub = _roomRef.onValue.listen(_onRoomUpdate);
+
+    // host が最初の1枚を配る…の代わりに「誰でも」流せる設計でもOKだが、
+    // 初回は host が押した直後なので既存通りでOK
+    if (widget.isHost) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _flushAndNext(reason: 'start');
+    }
+  }
+
+  List<int> _buildDeck(Random rng) {
+    final deck = <int>[];
+    _cardCounts.forEach((prime, count) {
+      for (int i = 0; i < count; i++) deck.add(prime);
+    });
+    deck.shuffle(rng);
+    return deck;
+  }
+
+  void _fillMySlots() {
+    while (_mySlots.length < 5 && _myDeck.isNotEmpty) {
+      _mySlots.add(_myDeck.removeAt(0));
+    }
+  }
+
+  Future<void> _onRoomUpdate(DatabaseEvent event) async {
+    if (!mounted || _navigated) return;
+    final data = event.snapshot.value as Map<dynamic, dynamic>?;
+    if (data == null) return;
+
+    // ★自分の penalty もDBを真実にする（再接続/ズレ対策）
+    final myData = data[_myKey] as Map<dynamic, dynamic>?;
+    if (myData != null) {
+      final myPenalty = myData['penalty'] as bool? ?? false;
+      if (myPenalty != _penaltyMe) {
+        setState(() => _penaltyMe = myPenalty);
+      }
+    }
+
+    // 相手の状態
+    final opData = data[_opKey] as Map<dynamic, dynamic>?;
+    bool opPenalty = false;
+    bool opDone = false;
+
+    if (opData != null) {
+      final slots = (opData['slots'] as List<dynamic>?)
+              ?.map((e) => int.parse(e.toString()))
+              .toList() ??
+          [];
+      final deckCount = opData['deckCount'] as int? ?? 0;
+      opDone = opData['done'] as bool? ?? false;
+      opPenalty = opData['penalty'] as bool? ?? false;
+
+      if (opDone && !_gameOver) {
+        await _endGame(iWon: false);
+        return;
+      }
+
+      setState(() {
+        _opponentSlots = slots;
+        _opponentDeckCount = deckCount;
+        _penaltyOp = opPenalty;
+      });
+
+      // ★両者お手つき → 誰でも流せる
+      if (_penaltyMe && opPenalty && !_isFlowing) {
+        _isFlowing = true;
+        setState(() => _acceptInput = false);
+        try {
+          await _flushAndNext(reason: 'bothPenalty');
+        } finally {
+          _isFlowing = false;
+        }
+        return;
+      }
+    }
+
+    final gameData = data['game'] as Map<dynamic, dynamic>?;
+    if (gameData == null) return;
+
+    final phase = gameData['phase'] as String? ?? 'init';
+
+    // deckEmpty
+    if (phase == 'deckEmpty' && !_gameOver) {
+      await _endByCompareRemaining();
+      return;
+    }
+
+    final rawComposite = gameData['composite'];
+    if (rawComposite == null) return;
+
+    final composite = rawComposite is int
+        ? rawComposite
+        : int.tryParse(rawComposite.toString()) ?? 0;
+    if (composite <= 1) return;
+
+    // 新しい題札
+    if (composite != _currentComposite) {
+      await _onNewComposite(composite);
+      return;
+    }
+
+    // playZone 更新（playing中のみ）
+    if (phase != 'playing') return;
+
+    final playZoneRaw = gameData['playZone'] as Map<dynamic, dynamic>?;
+    if (playZoneRaw == null) return;
+
+    final newZone = <int, Map<String, int>>{};
+    playZoneRaw.forEach((k, v) {
+      final prime = int.tryParse(k.toString());
+      if (prime == null) return;
+      final m = (v as Map?)?.cast<String, dynamic>() ?? {};
+      newZone[prime] = {
+        'host': (m['host'] as int?) ?? 0,
+        'guest': (m['guest'] as int?) ?? 0,
+      };
+    });
+
+    setState(() => _playZone = newZone);
+
+    // 完成 → 誰でも流せる（Transactionロック）
+    if (!_acceptInput) return;
+    if (!_isComplete()) return;
+    if (_isFlowing) return;
+
+    _isFlowing = true;
+    setState(() => _acceptInput = false);
+    try {
+      await _flushAndNext(reason: 'complete');
+    } finally {
+      _isFlowing = false;
+    }
+  }
+
+  Future<void> _onNewComposite(int composite) async {
+    final factors = factorize(composite);
+
+    // ★デバッグ：18のとき {2:1,3:2} になってるか確認
+    debugPrint('composite=$composite factors=$factors');
+
+    if (factors.isEmpty) {
+      if (!_isFlowing) {
+        _isFlowing = true;
+        try {
+          await _flushAndNext(reason: 'invalidComposite');
+        } finally {
+          _isFlowing = false;
+        }
+      }
+      return;
+    }
+
+    _stopCountdownViewOnly();
+
+    setState(() {
+      _currentComposite = composite;
+      _targetFactors = Map.from(factors);
+      _playZone = {};
+      _penaltyMe = false;
+      _penaltyOp = false;
+      _acceptInput = false;
+      _penaltyMsg = '';
+      _readyGoText = 'READY';
+    });
+
+    // ★ penalty は必ず両者解除
+    await _roomRef.update({
+      'host/penalty': false,
+      'guest/penalty': false,
+    });
+
+    // READY→GO→入力解禁
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (!mounted || _currentComposite != composite) return;
+      setState(() => _readyGoText = 'GO!');
+      Future.delayed(const Duration(milliseconds: 400), () async {
+        if (!mounted || _currentComposite != composite) return;
+        setState(() {
+          _readyGoText = '';
+          _acceptInput = true;
+        });
+
+        // ★ここが重要：完成判定の取り逃し防止（GO直後に完成してたら流す）
+        await _maybeAutoFlushIfComplete();
+      });
+    });
+  }
+
+  Future<void> _maybeAutoFlushIfComplete() async {
+    if (!mounted || _gameOver) return;
+    if (_isFlowing) return;
+    if (!_acceptInput) return;
+    if (!_isComplete()) return;
+
+    _isFlowing = true;
+    setState(() => _acceptInput = false);
+    try {
+      await _flushAndNext(reason: 'complete_late');
+    } finally {
+      _isFlowing = false;
+    }
+  }
+
+  bool _isComplete() {
+    if (_currentComposite == null) return false;
+    if (_targetFactors.isEmpty) return false;
+    for (final e in _targetFactors.entries) {
+      if (e.value <= 0) return false;
+      if (_playZoneTotal(e.key) < e.value) return false;
+    }
+    return true;
+  }
+
+  int _playZoneTotal(int prime) {
+    final m = _playZone[prime];
+    if (m == null) return 0;
+    return (m['host'] ?? 0) + (m['guest'] ?? 0);
+  }
+
+  bool _canPlay(int prime) {
+    final needed = _targetFactors[prime] ?? 0;
+    if (needed == 0) return false;
+    return _playZoneTotal(prime) < needed;
+  }
+
+  /// ★流す→次の題札（誰でも呼べる／Transactionで一人だけ成功）
+  Future<void> _flushAndNext({required String reason}) async {
+    TransactionResult tx;
+
+    // phase を flushing に（多重防止ロック）
+    try {
+      tx = await _gameRef.runTransaction((cur) {
+        final m = (cur as Map?)?.cast<String, dynamic>() ?? {};
+        final phase = m['phase'] as String? ?? 'playing';
+        if (phase == 'flushing') return Transaction.abort();
+
+        m['phase'] = 'flushing';
+        m['phaseAt'] = ServerValue.timestamp;
+        m['reason'] = reason;
+        m['flushedBy'] = _myKey;
+        return Transaction.success(m);
+      });
+    } catch (_) {
+      return;
+    }
+
+    if (!tx.committed) return;
+
+    try {
+      await Future.delayed(const Duration(milliseconds: 350));
+
+      final deckTx = await _stateRef.runTransaction((cur) {
+        final m = (cur as Map?)?.cast<String, dynamic>() ?? {};
+        final pos = (m['deckPos'] as int?) ?? 0;
+
+        m['deckPos'] = pos + 1;
+        m['turnStartAt'] = _serverNowMs(); // ★必ず int
+        m['limitSec'] = 10;
+        m['round'] = ((m['round'] as int?) ?? 0) + 1;
+        m['flowCount'] = ((m['flowCount'] as int?) ?? 0) + 1;
+
+        return Transaction.success(m);
+      });
+
+      if (!deckTx.committed) {
+        // state更新できないなら phase を戻す
+        await _gameRef.update({
+          'phase': 'playing',
+          'phaseAt': ServerValue.timestamp,
+        });
+        return;
+      }
+
+      final after = (deckTx.snapshot.value as Map?)?.cast<String, dynamic>() ?? {};
+      final deckPosAfter = (after['deckPos'] as int?) ?? 1;
+      final drawIndex = deckPosAfter - 1;
+
+      if (drawIndex < 0 || drawIndex >= _deck.length) {
+        await _gameRef.update({
+          'phase': 'deckEmpty',
+          'phaseAt': ServerValue.timestamp,
+          'composite': null,
+          'playZone': {},
+        });
+        return;
+      }
+
+      final card = _deck[drawIndex];
+
+      await _gameRef.update({
+        'phase': 'playing',
+        'phaseAt': ServerValue.timestamp,
+        'composite': card,
+        'playZone': {},
+      });
+    } catch (e) {
+      // ★途中で落ちても flushing 固定にしない
+      await _gameRef.update({
+        'phase': 'playing',
+        'phaseAt': ServerValue.timestamp,
+        'error': e.toString(),
+      });
+    }
+  }
+
+  Future<void> _playCard(int slotIndex) async {
+    if (_gameOver || !_acceptInput || _penaltyMe) return;
+    if (slotIndex < 0 || slotIndex >= _mySlots.length) return;
+
+    final prime = _mySlots[slotIndex];
+
+    if (!_canPlay(prime)) {
+      setState(() {
+        _penaltyMsg = 'お手つき！ $prime は出せません';
+        _penaltyMe = true;
+      });
+      await _roomRef.child(_myKey).update({'penalty': true});
+      return;
+    }
+
+    final ref = _db.ref('rooms/${widget.roomId}/game/playZone/$prime/$_myKey');
+    await ref.runTransaction((mutable) {
+      final current = (mutable as int?) ?? 0;
+      return Transaction.success(current + 1);
+    });
+
+    setState(() {
+      _penaltyMsg = '';
+      if (_myDeck.isNotEmpty) {
+        _mySlots[slotIndex] = _myDeck.removeAt(0);
+      } else {
+        _mySlots.removeAt(slotIndex);
+      }
+    });
+
+    await _roomRef.child(_myKey).update({
+      'slots': _mySlots,
+      'deckCount': _myDeck.length,
+    });
+
+    if (_mySlots.isEmpty && _myDeck.isEmpty) {
+      await _endGame(iWon: true);
+    }
+  }
+
+  Future<void> _endByCompareRemaining() async {
+    final myRemain = _myDeck.length + _mySlots.length;
+    final opRemain = _opponentDeckCount + _opponentSlots.length;
+
+    if (myRemain == opRemain) {
+      _stopCountdownViewOnly();
+      setState(() {
+        _gameOver = true;
+        _isDraw = true;
+        _navigated = true;
+      });
+      return;
+    }
+    await _endGame(iWon: myRemain < opRemain);
+  }
+
+  Future<void> _endGame({required bool iWon}) async {
+    _stopCountdownViewOnly();
+    if (iWon) await _roomRef.child(_myKey).update({'done': true});
+    setState(() {
+      _gameOver = true;
+      _iWon = iWon;
+      _navigated = true;
+    });
+  }
+
+  Future<void> _forceNext() async {
+    if (_isFlowing) return;
+    _isFlowing = true;
+    setState(() => _acceptInput = false);
+    try {
+      await _flushAndNext(reason: 'manual');
+    } finally {
+      _isFlowing = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_gameOver) return _buildResult();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0a1628),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0a1628),
+        foregroundColor: Colors.white,
+        title: Text('対人戦  ルーム: ${widget.roomId}'),
+        actions: [
+          if (_countDown > 0)
+            Center(
+              child: Container(
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: _countDown <= 3 ? Colors.redAccent : Colors.orange,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$_countDown',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          // 手動「流す」は両者OKにしても安全（Transactionロック）
+          TextButton.icon(
+            onPressed: _forceNext,
+            icon: const Icon(Icons.sync, color: Colors.orange),
+            label: const Text('流す', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _buildOpponentArea(),
+          const Divider(color: Colors.white12, height: 1),
+          Expanded(child: _buildCenterArea()),
+          const Divider(color: Colors.white12, height: 1),
+          _buildMyArea(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOpponentArea() {
+    return Container(
+      color: const Color(0xFF0d1f3c),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          const Icon(Icons.person_outline, color: Colors.redAccent, size: 18),
+          const SizedBox(width: 6),
+          Text('相手  山: $_opponentDeckCount枚',
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          if (_penaltyOp)
+            const Padding(
+              padding: EdgeInsets.only(left: 8),
+              child: Text('⚠ お手つき中',
+                  style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCenterArea() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            height: 52,
+            child: Center(
+              child: _countDown > 0
+                  ? Text(
+                      '$_countDown',
+                      style: TextStyle(
+                        fontSize: 48,
+                        fontWeight: FontWeight.w900,
+                        color: _countDown <= 3 ? Colors.redAccent : Colors.orange,
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
+          const Text('題札',
+              style: TextStyle(color: Colors.white38, fontSize: 12)),
+          const SizedBox(height: 6),
+          SizedBox(
+            width: 120,
+            height: 140,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 120,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1a1a2e),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _readyGoText.isNotEmpty
+                          ? Colors.white24
+                          : Colors.white54,
+                      width: 2,
+                    ),
+                  ),
+                  child: Center(
+                    child: _readyGoText.isNotEmpty
+                        ? const SizedBox.shrink()
+                        : Text(
+                            _currentComposite != null ? '$_currentComposite' : '',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 44,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                  ),
+                ),
+                if (_readyGoText.isNotEmpty)
+                  SizedBox(
+                    width: 110,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        _readyGoText,
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: 40,
+                          fontWeight: FontWeight.w900,
+                          color: _readyGoText == 'GO!'
+                              ? const Color(0xFF00e676)
+                              : const Color(0xFFffd700),
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Row(
+            children: [
+              Icon(Icons.person_outline, color: Colors.redAccent, size: 14),
+              SizedBox(width: 4),
+              Text('相手の場札',
+                  style: TextStyle(color: Colors.white38, fontSize: 11)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: (_opponentSlots.isEmpty
+                      ? List<int?>.filled(5, null)
+                      : _opponentSlots.cast<int?>())
+                  .map((v) => _buildCard(v,
+                      owner: 'opponent', small: true, faceDown: v == null))
+                  .toList(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text('プレイゾーン',
+              style: TextStyle(color: Colors.white38, fontSize: 12)),
+          const SizedBox(height: 4),
+          Container(
+            constraints: const BoxConstraints(minHeight: 72),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white10,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: _playZone.isEmpty
+                ? const Center(
+                    child: Text('カードを出す場所',
+                        style: TextStyle(color: Colors.white24, fontSize: 12)))
+                : Wrap(
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      for (final e in _playZone.entries) ...[
+                        for (int i = 0; i < (e.value[_myKey] ?? 0); i++)
+                          _buildCard(e.key, small: true, owner: 'me'),
+                        for (int i = 0; i < (e.value[_opKey] ?? 0); i++)
+                          _buildCard(e.key, small: true, owner: 'opponent'),
+                      ],
+                    ],
+                  ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 30,
+            child: _penaltyMsg.isNotEmpty
+                ? Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      _penaltyMsg,
+                      style:
+                          const TextStyle(color: Colors.redAccent, fontSize: 13),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMyArea() {
+    return Container(
+      color: const Color(0xFF0d1f3c),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.person, color: Color(0xFF00d4ff), size: 18),
+              const SizedBox(width: 6),
+              Text('あなた  山: ${_myDeck.length}枚',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              if (_penaltyMe)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Text('⚠ お手つき中',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: List.generate(_mySlots.length, (i) {
+                final tappable = !_penaltyMe && _acceptInput;
+                return GestureDetector(
+                  onTap: tappable ? () => _playCard(i) : null,
+                  child: _buildCard(_mySlots[i], owner: 'me'),
+                );
+              }),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard(
+    int? prime, {
+    bool faceDown = false,
+    bool small = false,
+    String? owner,
+  }) {
+    final w = small ? 44.0 : 60.0;
+    final h = small ? 56.0 : 76.0;
+
+    Color borderColor, bgColor, textColor;
+    if (faceDown || prime == null) {
+      borderColor = Colors.white24;
+      bgColor = const Color(0xFF1a1a2e);
+      textColor = Colors.white24;
+    } else if (owner == 'me') {
+      borderColor = const Color(0xFF00d4ff);
+      bgColor = const Color(0xFF00d4ff).withOpacity(0.15);
+      textColor = const Color(0xFF00d4ff);
+    } else if (owner == 'opponent') {
+      borderColor = const Color(0xFFff4444);
+      bgColor = const Color(0xFFff4444).withOpacity(0.15);
+      textColor = const Color(0xFFff4444);
+    } else {
+      borderColor = Colors.white38;
+      bgColor = const Color(0xFF1a2a3a);
+      textColor = Colors.white;
+    }
+
+    return Container(
+      width: w,
+      height: h,
+      margin: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1.5),
+      ),
+      child: Center(
+        child: (faceDown || prime == null)
+            ? const Icon(Icons.question_mark, color: Colors.white24, size: 20)
+            : Text(
+                '$prime',
+                style: TextStyle(
+                  color: textColor,
+                  fontSize: small ? 18 : 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildResult() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0a1628),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_isDraw ? '🤝' : (_iWon ? '🏆' : '😢'),
+                style: const TextStyle(fontSize: 80)),
+            const SizedBox(height: 16),
+            Text(
+              _isDraw ? '引き分け' : (_iWon ? 'あなたの勝ち！' : '相手の勝ち...'),
+              style: TextStyle(
+                fontSize: 36,
+                fontWeight: FontWeight.bold,
+                color: _isDraw
+                    ? Colors.white70
+                    : (_iWon ? const Color(0xFFffd700) : Colors.white54),
+              ),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00d4ff),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              onPressed: () => Navigator.popUntil(context, (r) => r.isFirst),
+              child: const Text('タイトルへ', style: TextStyle(fontSize: 18)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
