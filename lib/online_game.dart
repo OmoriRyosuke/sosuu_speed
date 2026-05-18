@@ -1,16 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'main.dart' show factorize, compositeNumbers;
+import 'package:flutter/foundation.dart';
+import 'app_settings.dart';
+import 'strings.dart';
+import 'game_utils.dart';
 
 const String _interstitialAdUnitId = 'ca-app-pub-9623929703707876/3413193716';
 
 class OnlineMenuScreen extends StatelessWidget {
-  const OnlineMenuScreen({super.key});
+  final GameConfig? config;
+  const OnlineMenuScreen({super.key, this.config});
 
   String _generateRoomId() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -21,12 +26,13 @@ class OnlineMenuScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final roomController = TextEditingController();
+    final effectiveConfig = config ?? GameConfig.defaultConfig;
     return Scaffold(
       backgroundColor: const Color(0xFF0a1628),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
-        title: const Text('対人戦'),
+        title: Text(S.onlineTitle),
       ),
       body: Center(
         child: Padding(
@@ -34,7 +40,7 @@ class OnlineMenuScreen extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('👥', style: TextStyle(fontSize: 60)),
+              const Text('\u{1F465}', style: TextStyle(fontSize: 60)),
               const SizedBox(height: 24),
               SizedBox(
                 width: 280, height: 56,
@@ -47,14 +53,14 @@ class OnlineMenuScreen extends StatelessWidget {
                   onPressed: () {
                     final roomId = _generateRoomId();
                     Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => WaitingRoomScreen(roomId: roomId, isHost: true),
+                      builder: (_) => WaitingRoomScreen(roomId: roomId, isHost: true, config: effectiveConfig),
                     ));
                   },
-                  child: const Text('ルームを作る', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  child: Text(S.createRoom, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
               ),
               const SizedBox(height: 32),
-              const Text('または', style: TextStyle(color: Colors.white38, fontSize: 14)),
+              Text('or', style: const TextStyle(color: Colors.white38, fontSize: 14)),
               const SizedBox(height: 32),
               Container(
                 width: 280,
@@ -69,12 +75,12 @@ class OnlineMenuScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                   textCapitalization: TextCapitalization.characters,
                   maxLength: 5,
-                  decoration: const InputDecoration(
-                    hintText: 'ルームID',
-                    hintStyle: TextStyle(color: Colors.white38),
+                  decoration: InputDecoration(
+                    hintText: S.roomIdHint,
+                    hintStyle: const TextStyle(color: Colors.white38),
                     border: InputBorder.none,
                     counterText: '',
-                    contentPadding: EdgeInsets.symmetric(vertical: 16),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   onChanged: (v) {
                     final up = v.toUpperCase();
@@ -98,14 +104,14 @@ class OnlineMenuScreen extends StatelessWidget {
                     final id = roomController.text.trim().toUpperCase();
                     if (id.length != 5) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('5文字のルームIDを入力してください')));
+                        SnackBar(content: Text(S.enterRoomId)));
                       return;
                     }
                     Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => WaitingRoomScreen(roomId: id, isHost: false),
+                      builder: (_) => WaitingRoomScreen(roomId: id, isHost: false, config: effectiveConfig),
                     ));
                   },
-                  child: const Text('ルームに参加', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  child: Text(S.joinRoom, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
               ),
             ],
@@ -119,7 +125,8 @@ class OnlineMenuScreen extends StatelessWidget {
 class WaitingRoomScreen extends StatefulWidget {
   final String roomId;
   final bool isHost;
-  const WaitingRoomScreen({super.key, required this.roomId, required this.isHost});
+  final GameConfig config;
+  const WaitingRoomScreen({super.key, required this.roomId, required this.isHost, required this.config});
   @override
   State<WaitingRoomScreen> createState() => _WaitingRoomScreenState();
 }
@@ -160,7 +167,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
       final snap = await _roomRef.get();
       if (!snap.exists) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ルームが見つかりません')));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.roomNotFound)));
           Navigator.pop(context);
         }
         return;
@@ -168,7 +175,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
       final data = snap.value as Map<dynamic, dynamic>?;
       if ((data?['status'] as String?) != 'waiting') {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('このルームは開始済みです')));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.roomStarted)));
           Navigator.pop(context);
         }
         return;
@@ -194,11 +201,19 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
 
     final rng = Random();
     final seed = rng.nextInt(999999);
-    final deck = List.from(compositeNumbers)..shuffle(Random(seed));
+    final composites = widget.config.composites != null
+        ? List<int>.from(widget.config.composites!)
+        : List<int>.from(compositeNumbers);
+    final deck = List.from(composites)..shuffle(Random(seed));
     final deckList = deck.cast<int>().toList();
 
     try {
-      await _roomRef.update({'status': 'playing', 'seed': seed, 'deck': deckList});
+      await _roomRef.update({
+        'status': 'playing',
+        'seed': seed,
+        'deck': deckList,
+        'config': jsonEncode(widget.config.toJson()),
+      });
       await _roomRef.child('game').set({
         'phase': 'init',
         'composite': null,
@@ -209,7 +224,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _starting = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('開始に失敗しました: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.startFailed(e))));
       }
     }
   }
@@ -229,13 +244,13 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
-        title: const Text('待機中...'),
+        title: Text(S.waitingTitle),
       ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('ルームID', style: TextStyle(color: Colors.white38, fontSize: 13)),
+            Text(S.roomIdHint, style: const TextStyle(color: Colors.white38, fontSize: 13)),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
@@ -251,10 +266,10 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
             TextButton.icon(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: widget.roomId));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('コピーしました！')));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.copied)));
               },
               icon: const Icon(Icons.copy, color: Colors.white38, size: 14),
-              label: const Text('コピー', style: TextStyle(color: Colors.white38, fontSize: 12)),
+              label: Text(S.copy, style: const TextStyle(color: Colors.white38, fontSize: 12)),
             ),
             const SizedBox(height: 20),
             Container(
@@ -263,7 +278,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
               child: QrImageView(data: _url, version: QrVersions.auto, size: 160),
             ),
             const SizedBox(height: 8),
-            const Text('QRコードを読ませて招待', style: TextStyle(color: Colors.white38, fontSize: 12)),
+            Text(S.scanQr, style: const TextStyle(color: Colors.white38, fontSize: 12)),
             const SizedBox(height: 28),
             if (widget.isHost) ...[
               Row(
@@ -276,7 +291,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _guestJoined ? '相手が参加しました！' : '相手の参加を待っています...',
+                    _guestJoined ? S.guestJoined : S.waitingGuest,
                     style: TextStyle(color: _guestJoined ? const Color(0xFF00e676) : Colors.white54, fontSize: 14),
                   ),
                 ],
@@ -294,19 +309,19 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
                     child: _starting
                         ? const SizedBox(width: 20, height: 20,
                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Text('ゲームスタート！',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                        : Text(S.startGame,
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
                   ),
                 ),
               ),
             ] else ...[
-              const Row(
+              Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  SizedBox(width: 18, height: 18,
+                  const SizedBox(width: 18, height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38)),
-                  SizedBox(width: 8),
-                  Text('ホストのスタートを待っています...', style: TextStyle(color: Colors.white54, fontSize: 14)),
+                  const SizedBox(width: 8),
+                  Text(S.waitingHost, style: const TextStyle(color: Colors.white54, fontSize: 14)),
                 ],
               ),
             ],
@@ -326,7 +341,8 @@ class OnlineGameScreen extends StatefulWidget {
 }
 
 class _OnlineGameScreenState extends State<OnlineGameScreen> {
-  static const Map<int, int> _cardCounts = {2: 5, 3: 4, 5: 3, 7: 3, 11: 3};
+  GameConfig _config = GameConfig.defaultConfig;
+  Map<int, int> get _cardCounts => _config.primeCards;
 
   final _db = FirebaseDatabase.instance;
   StreamSubscription? _roomSub;
@@ -357,8 +373,9 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
   String _readyGoText = '';
   bool _navigated = false;
   bool _isFlowing = false;
+  bool _playingCard = false;
+  int _deckPos = 0;
 
-  // 広告
   InterstitialAd? _interstitialAd;
   bool _adLoaded = false;
 
@@ -376,8 +393,8 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     super.dispose();
   }
 
-  // ── 広告読み込み ──────────────────────────
   void _loadAd() {
+    if (kIsWeb) return;
     InterstitialAd.load(
       adUnitId: _interstitialAdUnitId,
       request: const AdRequest(),
@@ -413,10 +430,17 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     if (data == null || data['status'] != 'playing' ||
         data['deck'] == null || data['seed'] == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ルーム状態が不正です')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.roomInvalid)));
         Navigator.pop(context);
       }
       return;
+    }
+
+    final configRaw = data['config'] as String?;
+    if (configRaw != null) {
+      try {
+        _config = GameConfig.fromJson(jsonDecode(configRaw) as Map<String, dynamic>);
+      } catch (_) {}
     }
 
     final deckRaw = data['deck'] as List<dynamic>;
@@ -437,6 +461,8 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     await Future.delayed(const Duration(milliseconds: 400));
     if (!mounted) return;
 
+    _roomRef.keepSynced(true);
+    _gameRef.keepSynced(true);
     _roomSub = _roomRef.onValue.listen(_onRoomUpdate);
 
     if (widget.isHost) {
@@ -451,7 +477,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
   List<int> _buildDeck(Random rng) {
     final deck = <int>[];
     _cardCounts.forEach((prime, count) {
-      for (int i = 0; i < count; i++) deck.add(prime);
+      for (int i = 0; i < count; i++) { deck.add(prime); }
     });
     deck.shuffle(rng);
     return deck;
@@ -465,26 +491,22 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
 
   Future<void> _nextCard() async {
     if (!widget.isHost) return;
-    final snap = await _gameRef.get();
-    final gm = (snap.value as Map?)?.cast<String, dynamic>() ?? {};
-    final pos = (gm['deckPos'] as int?) ?? 0;
-    final nextPos = pos + 1;
-
-    final idx = _roomDeck.length - nextPos;
+    _deckPos++;
+    final idx = _roomDeck.length - _deckPos;
     if (idx < 0 || idx >= _roomDeck.length) {
-      await _gameRef.update({'phase': 'deckEmpty', 'composite': null});
+      _gameRef.update({'phase': 'deckEmpty', 'composite': null});
       if (mounted && !_gameOver) _endGame(iWon: false);
       return;
     }
 
     final card = _roomDeck[idx];
-    await _roomRef.child('host').update({'penalty': false});
-    await _roomRef.child('guest').update({'penalty': false});
-    await _gameRef.update({
-      'phase': 'playing',
-      'composite': card,
-      'deckPos': nextPos,
-      'playZone': {'_x': 0},
+    _roomRef.update({
+      'host/penalty': false,
+      'guest/penalty': false,
+      'game/phase': 'playing',
+      'game/composite': card,
+      'game/deckPos': _deckPos,
+      'game/playZone': {'_x': 0},
     });
   }
 
@@ -578,7 +600,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         final prime = int.tryParse(k.toString());
         if (prime == null || v == null || v is! Map) return;
         newZone[prime] = {
-          'host': _toInt((v as Map)['host']),
+          'host': _toInt(v['host']),
           'guest': _toInt(v['guest']),
         };
       });
@@ -613,40 +635,63 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     return (m['host'] ?? 0) + (m['guest'] ?? 0);
   }
 
-  bool _canPlay(int prime) {
-    final needed = _targetFactors[prime] ?? 0;
-    if (needed == 0) return false;
-    return _playZoneTotal(prime) < needed;
-  }
-
   Future<void> _playCard(int slotIndex) async {
-    if (_gameOver || !_acceptInput || _penaltyMe) return;
+    if (_gameOver || !_acceptInput || _penaltyMe || _playingCard) return;
     if (slotIndex < 0 || slotIndex >= _mySlots.length) return;
+    if (_currentComposite == null) return;
 
     final prime = _mySlots[slotIndex];
+    final needed = _targetFactors[prime] ?? 0;
 
-    if (!_canPlay(prime)) {
-      setState(() { _penaltyMsg = 'お手つき！ $prime は出せません'; _penaltyMe = true; });
-      await _roomRef.child(_myKey).update({'penalty': true});
+    if (needed == 0) {
+      setState(() { _penaltyMsg = S.penaltyMsg(prime); _penaltyMe = true; });
+      _roomRef.child(_myKey).update({'penalty': true});
       return;
     }
 
-    final ref = _db.ref('rooms/${widget.roomId}/game/playZone/$prime/$_myKey');
-    final cur = await ref.get();
-    await ref.set((_toInt(cur.value)) + 1);
+    _playingCard = true;
+    try {
+      final txResult = await _gameRef.child('playZone/$prime').runTransaction(
+        (currentData) {
+          final primeData = currentData is Map
+              ? Map<String, dynamic>.from(
+                  currentData.map((k, v) => MapEntry(k.toString(), v)))
+              : <String, dynamic>{};
+          final total = _toInt(primeData['host']) + _toInt(primeData['guest']);
+          if (total >= needed) return Transaction.abort();
+          primeData[_myKey] = _toInt(primeData[_myKey]) + 1;
+          return Transaction.success(primeData);
+        },
+        applyLocally: false,
+      );
 
-    setState(() {
-      _penaltyMsg = '';
-      if (_myDeck.isNotEmpty) {
-        _mySlots[slotIndex] = _myDeck.removeAt(0);
-      } else {
-        _mySlots.removeAt(slotIndex);
+      if (!txResult.committed) {
+        // Beaten to this slot — treat as a foul
+        setState(() { _penaltyMsg = S.penaltyMsg(prime); _penaltyMe = true; });
+        _roomRef.child(_myKey).update({'penalty': true});
+        return;
       }
-    });
 
-    await _roomRef.child(_myKey).update({'slots': _mySlots, 'deckCount': _myDeck.length});
+      setState(() {
+        _penaltyMsg = '';
+        _playZone[prime] ??= {};
+        _playZone[prime]![_myKey] = (_playZone[prime]![_myKey] ?? 0) + 1;
+        if (_myDeck.isNotEmpty) {
+          _mySlots[slotIndex] = _myDeck.removeAt(0);
+        } else {
+          _mySlots.removeAt(slotIndex);
+        }
+      });
 
-    if (_mySlots.isEmpty && _myDeck.isEmpty) _endGame(iWon: true);
+      if (_mySlots.isEmpty && _myDeck.isEmpty) { _endGame(iWon: true); return; }
+
+      await _roomRef.update({
+        '$_myKey/slots': _mySlots,
+        '$_myKey/deckCount': _myDeck.length,
+      });
+    } finally {
+      _playingCard = false;
+    }
   }
 
   void _endGame({required bool iWon}) {
@@ -673,14 +718,14 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         backgroundColor: const Color(0xFF0a1628),
         foregroundColor: Colors.white,
         toolbarHeight: isSmall ? 40 : kToolbarHeight,
-        title: Text('対人戦  ${widget.roomId}',
+        title: Text('${S.onlineGameTitle}  ${widget.roomId}',
           style: TextStyle(fontSize: isSmall ? 14 : 18)),
         actions: [
           if (widget.isHost)
             TextButton.icon(
               onPressed: _hostForceNext,
               icon: Icon(Icons.sync, color: Colors.orange, size: isSmall ? 16 : 24),
-              label: Text('流す', style: TextStyle(color: Colors.orange, fontSize: isSmall ? 12 : 14)),
+              label: Text(S.flush, style: TextStyle(color: Colors.orange, fontSize: isSmall ? 12 : 14)),
             ),
         ],
       ),
@@ -703,11 +748,11 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
       child: Row(children: [
         Icon(Icons.person_outline, color: Colors.redAccent, size: isSmall ? 14 : 18),
         const SizedBox(width: 6),
-        Text('相手  山: $_opponentDeckCount枚',
+        Text('${S.opponentLabel}  ${S.deckSuffix}$_opponentDeckCount${S.deckCards}',
           style: TextStyle(color: Colors.white70, fontSize: isSmall ? 11 : 13)),
         if (_penaltyOp)
           Padding(padding: const EdgeInsets.only(left: 8),
-            child: Text('⚠ お手つき中',
+            child: Text(S.penaltyActive,
               style: TextStyle(color: Colors.redAccent, fontSize: isSmall ? 10 : 12))),
       ]),
     );
@@ -725,7 +770,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text('題札', style: TextStyle(color: Colors.white38, fontSize: isSmall ? 10 : 12)),
+          Text(S.questionCard, style: TextStyle(color: Colors.white38, fontSize: isSmall ? 10 : 12)),
           SizedBox(height: isSmall ? 2 : 6),
           SizedBox(
             width: cardW, height: cardH,
@@ -767,7 +812,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
           Row(children: [
             Icon(Icons.person_outline, color: Colors.redAccent, size: isSmall ? 11 : 14),
             const SizedBox(width: 4),
-            Text('相手の場札', style: TextStyle(color: Colors.white38, fontSize: isSmall ? 9 : 11)),
+            Text(S.opponentHand, style: TextStyle(color: Colors.white38, fontSize: isSmall ? 9 : 11)),
           ]),
           SizedBox(height: isSmall ? 2 : 4),
           SingleChildScrollView(
@@ -779,7 +824,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
             ),
           ),
           SizedBox(height: vGap),
-          Text('プレイゾーン', style: TextStyle(color: Colors.white38, fontSize: isSmall ? 10 : 12)),
+          Text(S.playZone, style: TextStyle(color: Colors.white38, fontSize: isSmall ? 10 : 12)),
           SizedBox(height: isSmall ? 2 : 4),
           Container(
             constraints: BoxConstraints(minHeight: isSmall ? 52 : 72),
@@ -791,7 +836,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
               border: Border.all(color: Colors.white12),
             ),
             child: _playZone.isEmpty
-                ? Center(child: Text('カードを出す場所',
+                ? Center(child: Text(S.playZoneHint,
                     style: TextStyle(color: Colors.white24, fontSize: isSmall ? 10 : 12)))
                 : Wrap(
                     spacing: 4, runSpacing: 4,
@@ -811,7 +856,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.2),
+                color: Colors.red.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(_penaltyMsg, style: TextStyle(color: Colors.redAccent, fontSize: isSmall ? 11 : 13)),
@@ -831,11 +876,11 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
           Row(children: [
             Icon(Icons.person, color: const Color(0xFF00d4ff), size: isSmall ? 14 : 18),
             const SizedBox(width: 6),
-            Text('あなた  山: ${_myDeck.length}枚',
+            Text('${S.youLabel}  ${S.deckSuffix}${_myDeck.length}${S.deckCards}',
               style: TextStyle(color: Colors.white70, fontSize: isSmall ? 11 : 13)),
             if (_penaltyMe)
               Padding(padding: const EdgeInsets.only(left: 8),
-                child: Text('⚠ お手つき中',
+                child: Text(S.penaltyActive,
                   style: TextStyle(color: Colors.redAccent, fontSize: isSmall ? 10 : 12))),
           ]),
           SizedBox(height: isSmall ? 4 : 10),
@@ -864,9 +909,9 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     if (faceDown || prime == null) {
       borderColor = Colors.white24; bgColor = const Color(0xFF1a1a2e); textColor = Colors.white24;
     } else if (owner == 'me') {
-      borderColor = const Color(0xFF00d4ff); bgColor = const Color(0xFF00d4ff).withOpacity(0.15); textColor = const Color(0xFF00d4ff);
+      borderColor = const Color(0xFF00d4ff); bgColor = const Color(0xFF00d4ff).withValues(alpha: 0.15); textColor = const Color(0xFF00d4ff);
     } else if (owner == 'opponent') {
-      borderColor = const Color(0xFFff4444); bgColor = const Color(0xFFff4444).withOpacity(0.15); textColor = const Color(0xFFff4444);
+      borderColor = const Color(0xFFff4444); bgColor = const Color(0xFFff4444).withValues(alpha: 0.15); textColor = const Color(0xFFff4444);
     } else {
       borderColor = Colors.white38; bgColor = const Color(0xFF1a2a3a); textColor = Colors.white;
     }
@@ -892,9 +937,9 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(_iWon ? '🏆' : '😢', style: const TextStyle(fontSize: 80)),
+            Text(_iWon ? '\u{1F3C6}' : '\u{1F622}', style: const TextStyle(fontSize: 80)),
             const SizedBox(height: 16),
-            Text(_iWon ? 'あなたの勝ち！' : '相手の勝ち...',
+            Text(_iWon ? S.youWin : S.opWin,
               style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold,
                 color: _iWon ? const Color(0xFFffd700) : Colors.white54)),
             const SizedBox(height: 40),
@@ -906,7 +951,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
               onPressed: () => Navigator.popUntil(context, (r) => r.isFirst),
-              child: const Text('タイトルへ', style: TextStyle(fontSize: 18)),
+              child: Text(S.toTitle, style: const TextStyle(fontSize: 18)),
             ),
           ],
         ),
