@@ -199,11 +199,8 @@ class _GameScreenState extends State<GameScreen> {
       MaterialPageRoute(
         builder: (_) => _ResultScreen(
           playerWon: _playerWon,
-          onRetry: () => Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => GameScreen(cpuLevel: widget.cpuLevel, config: widget.config)),
-          ),
-          onTitle: () => Navigator.popUntil(context, (r) => r.isFirst),
+          cpuLevel: widget.cpuLevel,
+          config: widget.config,
         ),
       ),
     );
@@ -655,9 +652,9 @@ class _GameScreenState extends State<GameScreen> {
 
 class _ResultScreen extends StatelessWidget {
   final bool playerWon;
-  final VoidCallback onRetry;
-  final VoidCallback onTitle;
-  const _ResultScreen({required this.playerWon, required this.onRetry, required this.onTitle});
+  final CpuLevel cpuLevel;
+  final GameConfig? config;
+  const _ResultScreen({required this.playerWon, required this.cpuLevel, this.config});
 
   @override
   Widget build(BuildContext context) {
@@ -679,12 +676,15 @@ class _ResultScreen extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
-              onPressed: onRetry,
+              onPressed: () => Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => GameScreen(cpuLevel: cpuLevel, config: config)),
+              ),
               child: Text(S.retry, style: const TextStyle(fontSize: 18)),
             ),
             const SizedBox(height: 12),
             TextButton(
-              onPressed: onTitle,
+              onPressed: () => Navigator.popUntil(context, (r) => r.isFirst),
               child: Text(S.toTitle, style: const TextStyle(color: Colors.white54)),
             ),
           ],
