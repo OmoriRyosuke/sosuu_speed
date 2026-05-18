@@ -6,6 +6,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'app_settings.dart';
 import 'strings.dart';
 import 'game_utils.dart';
+import 'audio_manager.dart';
 
 const String _interstitialAdUnitId = 'ca-app-pub-9623929703707876/3413193716';
 
@@ -133,6 +134,7 @@ class _GameScreenState extends State<GameScreen> {
   bool _playerWon = false;
   bool _penaltyPlayer = false;
   bool _acceptInput = false;
+  bool _passedByPlayer = false;
 
   String _readyGoText = '';
   String _penaltyMsg = '';
@@ -151,6 +153,7 @@ class _GameScreenState extends State<GameScreen> {
     super.initState();
     _loadAd();
     _initGame();
+    AudioManager.instance.playBgm('bgm_battle.mp3');
   }
 
   @override
@@ -159,6 +162,7 @@ class _GameScreenState extends State<GameScreen> {
     _cpuTimer?.cancel();
     _autoFlushTimer?.cancel();
     _interstitialAd?.dispose();
+    AudioManager.instance.stopBgm();
     super.dispose();
   }
 
@@ -270,6 +274,7 @@ class _GameScreenState extends State<GameScreen> {
     _playZone = {};
     _penaltyPlayer = false;
     _acceptInput = false;
+    _passedByPlayer = false;
     _penaltyMsg = '';
     _countDown = -1;
     setState(() => _readyGoText = 'READY');
@@ -400,11 +405,18 @@ class _GameScreenState extends State<GameScreen> {
     _startAutoCount();
   }
 
+  void _playerPass() {
+    if (_gameOver || !_acceptInput || _passedByPlayer) return;
+    setState(() => _passedByPlayer = true);
+    if (!_cpuHasPlayable()) _flushZone();
+  }
+
   void _endGame({required bool playerWon}) {
     _cpuTimer?.cancel();
     _countTimer?.cancel();
     _autoFlushTimer?.cancel();
     setState(() { _gameOver = true; _playerWon = playerWon; });
+    AudioManager.instance.playSe(playerWon ? 'se_win.mp3' : 'se_lose.mp3');
     Future.delayed(const Duration(milliseconds: 300), _showAdThenResult);
   }
 
@@ -571,7 +583,29 @@ class _GameScreenState extends State<GameScreen> {
               Padding(padding: const EdgeInsets.only(left: 8),
                 child: Text(S.penaltyActive, style: TextStyle(color: Colors.redAccent, fontSize: isSmall ? 10 : 12))),
           ]),
-          SizedBox(height: isSmall ? 4 : 10),
+          SizedBox(height: isSmall ? 4 : 8),
+          Row(children: [
+            GestureDetector(
+              onTap: (_acceptInput && !_passedByPlayer) ? _playerPass : null,
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: isSmall ? 10 : 14, vertical: isSmall ? 4 : 6),
+                decoration: BoxDecoration(
+                  color: (_acceptInput && !_passedByPlayer) ? Colors.white12 : Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: (_acceptInput && !_passedByPlayer) ? Colors.white30 : Colors.white12,
+                    width: 1,
+                  ),
+                ),
+                child: Text(S.passBtn,
+                    style: TextStyle(
+                        color: (_acceptInput && !_passedByPlayer) ? Colors.white60 : Colors.white24,
+                        fontSize: isSmall ? 11 : 13,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ]),
+          SizedBox(height: isSmall ? 4 : 8),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(

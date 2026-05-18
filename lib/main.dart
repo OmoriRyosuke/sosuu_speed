@@ -8,6 +8,7 @@ import 'app_settings.dart';
 import 'strings.dart';
 import 'create_mode_screen.dart';
 import 'game_screen.dart';
+import 'audio_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,6 +41,18 @@ class TitleScreen extends StatefulWidget {
 }
 
 class _TitleScreenState extends State<TitleScreen> {
+  @override
+  void initState() {
+    super.initState();
+    AudioManager.instance.playBgm('bgm_title.mp3');
+  }
+
+  @override
+  void dispose() {
+    AudioManager.instance.stopBgm();
+    super.dispose();
+  }
+
   Future<void> _setLang(bool english) async {
     await AppSettings.instance.setLanguage(english);
     setState(() {});

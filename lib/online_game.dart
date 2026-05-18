@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'app_settings.dart';
 import 'strings.dart';
 import 'game_utils.dart';
+import 'audio_manager.dart';
 
 const String _interstitialAdUnitId = 'ca-app-pub-9623929703707876/3413193716';
 
@@ -369,6 +370,8 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
   bool _penaltyMe = false;
   bool _penaltyOp = false;
   bool _acceptInput = false;
+  bool _passedMe = false;
+  bool _passedOp = false;
   String _penaltyMsg = '';
   String _readyGoText = '';
   bool _navigated = false;
@@ -390,6 +393,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
   void dispose() {
     _roomSub?.cancel();
     _interstitialAd?.dispose();
+    AudioManager.instance.stopBgm();
     super.dispose();
   }
 
@@ -456,6 +460,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
       'deckCount': _myDeck.length,
       'done': false,
       'penalty': false,
+      'passed': false,
     });
 
     await Future.delayed(const Duration(milliseconds: 400));
@@ -464,6 +469,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     _roomRef.keepSynced(true);
     _gameRef.keepSynced(true);
     _roomSub = _roomRef.onValue.listen(_onRoomUpdate);
+    AudioManager.instance.playBgm('bgm_battle.mp3');
 
     if (widget.isHost) {
       await Future.delayed(const Duration(milliseconds: 200));
@@ -500,12 +506,16 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     }
 
     final card = _roomDeck[idx];
+    final showAt = DateTime.now().millisecondsSinceEpoch + 1800;
     _roomRef.update({
       'host/penalty': false,
+      'host/passed': false,
       'guest/penalty': false,
+      'guest/passed': false,
       'game/phase': 'playing',
       'game/composite': card,
       'game/deckPos': _deckPos,
+      'game/showAt': showAt,
       'game/playZone': {'_x': 0},
     });
   }
@@ -518,12 +528,14 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     final opData = data[_opKey] as Map<dynamic, dynamic>?;
     bool opDone = false;
     bool opPenalty = false;
+    bool opPassed = false;
     if (opData != null) {
       final slots = (opData['slots'] as List<dynamic>?)
           ?.map((e) => e is int ? e : int.parse(e.toString())).toList() ?? [];
       final deckCount = opData['deckCount'] as int? ?? 0;
       opDone = opData['done'] as bool? ?? false;
       opPenalty = opData['penalty'] as bool? ?? false;
+      opPassed = opData['passed'] as bool? ?? false;
 
       if (opDone && !_gameOver) { _endGame(iWon: false); return; }
 
@@ -531,6 +543,7 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         _opponentSlots = slots;
         _opponentDeckCount = deckCount;
         _penaltyOp = opPenalty;
+        _passedOp = opPassed;
       });
     }
 
@@ -538,6 +551,17 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
       _isFlowing = true;
       setState(() => _acceptInput = false);
       Future.delayed(const Duration(milliseconds: 600), () async {
+        try { await _nextCard(); } finally {
+          if (mounted) _isFlowing = false;
+        }
+      });
+      return;
+    }
+
+    if (_passedMe && opPassed && widget.isHost && !_isFlowing) {
+      _isFlowing = true;
+      setState(() => _acceptInput = false);
+      Future.delayed(const Duration(milliseconds: 400), () async {
         try { await _nextCard(); } finally {
           if (mounted) _isFlowing = false;
         }
@@ -568,21 +592,29 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
         return;
       }
 
+      final showAtRaw = gameData['showAt'];
+      final showAt = showAtRaw is int ? showAtRaw
+          : (showAtRaw != null ? int.tryParse(showAtRaw.toString()) ?? 0 : 0);
+      final remainMs = showAt > 0
+          ? (showAt - DateTime.now().millisecondsSinceEpoch).clamp(0, 5000)
+          : 0;
+
       setState(() {
         _currentComposite = composite;
         _targetFactors = Map.from(factors);
         _playZone = {};
         _penaltyMe = false;
+        _passedMe = false;
         _penaltyMsg = '';
         _acceptInput = false;
         _readyGoText = 'READY';
       });
-      _roomRef.child(_myKey).update({'penalty': false});
+      _roomRef.child(_myKey).update({'penalty': false, 'passed': false});
 
-      Future.delayed(const Duration(milliseconds: 500), () {
+      Future.delayed(Duration(milliseconds: remainMs), () {
         if (!mounted || _displayedComposite != composite) return;
         setState(() => _readyGoText = 'GO!');
-        Future.delayed(const Duration(milliseconds: 500), () {
+        Future.delayed(const Duration(milliseconds: 400), () {
           if (!mounted || _displayedComposite != composite) return;
           setState(() { _readyGoText = ''; _acceptInput = true; });
         });
@@ -694,9 +726,16 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
     }
   }
 
+  Future<void> _passCard() async {
+    if (_gameOver || !_acceptInput || _passedMe) return;
+    setState(() => _passedMe = true);
+    await _roomRef.child(_myKey).update({'passed': true});
+  }
+
   void _endGame({required bool iWon}) {
     if (iWon) _roomRef.child(_myKey).update({'done': true});
     setState(() { _gameOver = true; _iWon = iWon; _navigated = true; });
+    AudioManager.instance.playSe(iWon ? 'se_win.mp3' : 'se_lose.mp3');
     Future.delayed(const Duration(milliseconds: 300), _showAdThenResult);
   }
 
@@ -883,7 +922,34 @@ class _OnlineGameScreenState extends State<OnlineGameScreen> {
                 child: Text(S.penaltyActive,
                   style: TextStyle(color: Colors.redAccent, fontSize: isSmall ? 10 : 12))),
           ]),
-          SizedBox(height: isSmall ? 4 : 10),
+          SizedBox(height: isSmall ? 4 : 8),
+          Row(children: [
+            GestureDetector(
+              onTap: (_acceptInput && !_passedMe) ? _passCard : null,
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: isSmall ? 10 : 14, vertical: isSmall ? 4 : 6),
+                decoration: BoxDecoration(
+                  color: (_acceptInput && !_passedMe) ? Colors.white12 : Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: (_acceptInput && !_passedMe) ? Colors.white30 : Colors.white12,
+                    width: 1,
+                  ),
+                ),
+                child: Text(S.passBtn,
+                    style: TextStyle(
+                        color: (_acceptInput && !_passedMe) ? Colors.white60 : Colors.white24,
+                        fontSize: isSmall ? 11 : 13,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            if (_passedOp) ...[
+              const SizedBox(width: 10),
+              Text(S.opPassedLabel,
+                  style: TextStyle(color: Colors.white38, fontSize: isSmall ? 10 : 11)),
+            ],
+          ]),
+          SizedBox(height: isSmall ? 4 : 8),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(

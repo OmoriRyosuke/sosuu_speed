@@ -112,6 +112,8 @@ class S {
   static String get quickBattleOnline => _e ? 'Online' : '対人';
   static String get extraPrimeHint =>
       _e ? 'Add prime (e.g. 41,43)' : '素数を追加 (例: 41,43)';
+  static String get passBtn => _e ? 'Pass' : 'パス';
+  static String get opPassedLabel => _e ? 'Op: passed' : '相手: パス中';
 
   // ── How to Play ────────────────────────────────────────
   static String get howToTitle => _e ? 'How to Play' : '遊び方';
